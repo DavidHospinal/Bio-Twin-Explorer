@@ -1,11 +1,28 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { HandTracker } from './components/HandTracker';
-import { Target, Grab, MousePointerClick } from 'lucide-react';
+import { BioTwinScene } from './components/BioTwinScene';
+import { SamSegmenter } from './components/SamSegmenter';
+import { Target, Grab, MousePointerClick, Brain, Upload } from 'lucide-react';
 
 function App() {
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
   const [isPinching, setIsPinching] = useState(false);
   const [isGrabbing, setIsGrabbing] = useState(false);
+  const [aiReady, setAiReady] = useState(false);
+  const [testImage, setTestImage] = useState<string | null>(null);
+
+  // Handler para cargar imagen
+  const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setTestImage(event.target?.result as string);
+        setAiReady(false);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col md:flex-row p-4 gap-4 overflow-hidden">
@@ -48,13 +65,42 @@ function App() {
           </div>
         </div>
 
-        <div className="flex-1 bg-slate-800 rounded-2xl p-4 border border-slate-700 relative overflow-hidden">
-          <div className="absolute inset-0 flex items-center justify-center opacity-10">
-            <span className="text-9xl rotate-45 select-none">3D</span>
+        <div className="flex-1 bg-slate-800 rounded-2xl border border-slate-700 relative overflow-hidden">
+          {/* Escena 3D Interactiva */}
+          <BioTwinScene
+            cursorX={cursor.x}
+            cursorY={cursor.y}
+            isPinching={isPinching}
+            isGrabbing={isGrabbing}
+          />
+
+          {/* SamSegmenter para segmentación AI */}
+          <SamSegmenter
+            imageSrc={testImage}
+            onImageEmbeddingCalculated={() => setAiReady(true)}
+            onMaskGenerated={() => { }}
+          />
+
+          {/* Botón para cargar imagen */}
+          <div className="absolute top-4 right-4">
+            <label className="cursor-pointer bg-cyan-600 hover:bg-cyan-500 px-3 py-2 rounded-lg text-xs flex items-center gap-2 transition-colors">
+              <Upload size={14} />
+              Cargar Imagen
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+            </label>
           </div>
-          <p className="text-center text-slate-500 mt-10">
-            3D Scene Placeholder
-          </p>
+
+          <div className="absolute bottom-4 right-4 flex items-center gap-2 text-xs">
+            <Brain size={16} className={aiReady ? "text-green-400" : "text-yellow-400"} />
+            <span className={aiReady ? "text-green-400" : "text-yellow-400"}>
+              {aiReady ? "AI Ready" : "AI Loading/Idle"}
+            </span>
+          </div>
         </div>
       </div>
 

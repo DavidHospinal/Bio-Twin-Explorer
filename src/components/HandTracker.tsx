@@ -13,9 +13,22 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
     const [isLoaded, setIsLoaded] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    // Usar refs para callbacks para evitar re-inicializaciones
+    const onCursorMoveRef = useRef(onCursorMove);
+    const onPinchRef = useRef(onPinch);
+    const onGrabRef = useRef(onGrab);
+
+    // Actualizar refs cuando cambien los callbacks
+    useEffect(() => {
+        onCursorMoveRef.current = onCursorMove;
+        onPinchRef.current = onPinch;
+        onGrabRef.current = onGrab;
+    }, [onCursorMove, onPinch, onGrab]);
+
     useEffect(() => {
         let handLandmarker: HandLandmarker | null = null;
         let animationFrameId: number;
+        let lastVideoTime = -1;
 
         const setupMediaPipe = async () => {
             try {
@@ -29,7 +42,7 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
                         delegate: "GPU"
                     },
                     runningMode: "VIDEO",
-                    numHands: 1
+                    numHands: 2
                 });
 
                 setIsLoaded(true);
@@ -41,15 +54,31 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
         };
 
         const startWebcam = async () => {
-            if (!videoRef.current) return;
+            if (!videoRef.current) {
+                console.log('[HandTracker] videoRef is null');
+                return;
+            }
 
             try {
+                console.log('[HandTracker] Requesting camera access...');
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: { width: 1280, height: 720 }
                 });
+                console.log('[HandTracker] Camera access granted');
                 videoRef.current.srcObject = stream;
-                videoRef.current.addEventListener('loadeddata', predictWebcam);
+
+                // Esperar a que el video cargue y luego reproducir
+                videoRef.current.onloadeddata = () => {
+                    console.log('[HandTracker] Video loaded, starting playback');
+                    videoRef.current?.play().then(() => {
+                        console.log('[HandTracker] Video playing, starting prediction loop');
+                        predictWebcam();
+                    }).catch(err => {
+                        console.error('[HandTracker] Error playing video:', err);
+                    });
+                };
             } catch (err) {
+                console.error('[HandTracker] Camera error:', err);
                 setError('Camera access denied');
             }
         };
@@ -73,65 +102,69 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
             }
 
             const startTimeMs = performance.now();
-            const results = handLandmarker.detectForVideo(video, startTimeMs);
 
-            if (ctx) {
-                ctx.save();
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                const results = handLandmarker.detectForVideo(video, startTimeMs);
 
-                // Mirror effect setup
-                ctx.translate(canvas.width, 0);
-                ctx.scale(-1, 1);
+                if (ctx) {
+                    ctx.save();
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                if (results.landmarks && results.landmarks.length > 0) {
-                    const landmarks = results.landmarks[0];
+                    // Mirror effect setup
+                    ctx.translate(canvas.width, 0);
+                    ctx.scale(-1, 1);
 
-                    // Draw landmarks
-                    const drawingUtils = new DrawingUtils(ctx);
-                    drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, {
-                        color: "#00FF00",
-                        lineWidth: 2
-                    });
-                    drawingUtils.drawLandmarks(landmarks, {
-                        color: "#FF0000",
-                        lineWidth: 1,
-                        radius: 3
-                    });
+                    if (results.landmarks && results.landmarks.length > 0) {
+                        const drawingUtils = new DrawingUtils(ctx);
 
-                    // Logic for Cursor (Index Finger Tip - ID 8)
-                    const indexTip = landmarks[8];
-                    const thumbTip = landmarks[4];
+                        // Dibujar TODAS las manos detectadas
+                        for (let i = 0; i < results.landmarks.length; i++) {
+                            const landmarks = results.landmarks[i];
+                            const handColor = i === 0 ? "#00FF00" : "#FF00FF"; // Verde para mano 1, Magenta para mano 2
 
-                    // Normalize coordinates (0-1) to screen space if needed, usually we pass normalized
-                    // Note: MediaPipe returns normalized [0,1]. Interfacing code expects [0,1] or pixel? 
-                    // Let's pass normalized for now.
-                    // Note 2: Because of mirroring, X needs to be inverted for the logic if we want natural feeling?
-                    // Actually, if we mirrored the drawing, visual tracking is fine.
-                    // Coordinate logic: 
-                    // If the user moves right hand to the right of their body, it shows on the right implementation-wise.
-                    // BUT video is flipped. So we usually flip x.
-                    const cursorX = 1 - indexTip.x;
-                    const cursorY = indexTip.y;
+                            drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, {
+                                color: handColor,
+                                lineWidth: 3
+                            });
+                            drawingUtils.drawLandmarks(landmarks, {
+                                color: i === 0 ? "#FF0000" : "#00FFFF",
+                                lineWidth: 1,
+                                radius: 4
+                            });
+                        }
 
-                    onCursorMove(cursorX, cursorY);
+                        // Usar la primera mano para el cursor
+                        const landmarks = results.landmarks[0];
 
-                    // Logic for Pinch (Index Tip to Thumb Tip distance)
-                    const distance = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
-                    const isPinching = distance < 0.05; // Threshold
-                    onPinch(isPinching, cursorX, cursorY);
+                        // Logic for Cursor (Index Finger Tip - ID 8)
+                        const indexTip = landmarks[8];
+                        const thumbTip = landmarks[4];
 
-                    // Logic for Grab (Fist-like)
-                    // Simplified: check if finger tips are close to wrist? or just a generic "pinch + middle finger down"
-                    // For now, let's assume Pinch is the main trigger. Grab can be implemented if needed for 3D rotation.
-                    // Let's use all tips close together for grab.
-                    const middleTip = landmarks[12];
+                        // X is inverted due to mirror
+                        const cursorX = 1 - indexTip.x;
+                        const cursorY = indexTip.y;
 
-                    const grabDistance = Math.hypot(thumbTip.x - middleTip.x, thumbTip.y - middleTip.y);
-                    const isGrabbing = grabDistance < 0.1 && isPinching;
-                    onGrab(isGrabbing);
+                        onCursorMoveRef.current(cursorX, cursorY);
+
+                        // Logic for Pinch (Index Tip to Thumb Tip distance)
+                        const distance = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                        const isPinching = distance < 0.05; // Threshold
+                        onPinchRef.current(isPinching, cursorX, cursorY);
+
+                        // Logic for Grab (Fist-like)
+                        // Simplified: check if finger tips are close to wrist? or just a generic "pinch + middle finger down"
+                        // For now, let's assume Pinch is the main trigger. Grab can be implemented if needed for 3D rotation.
+                        // Let's use all tips close together for grab.
+                        const middleTip = landmarks[12];
+
+                        const grabDistance = Math.hypot(thumbTip.x - middleTip.x, thumbTip.y - middleTip.y);
+                        const isGrabbing = grabDistance < 0.1 && isPinching;
+                        onGrabRef.current(isGrabbing);
+                    }
+
+                    ctx.restore();
                 }
-
-                ctx.restore();
             }
 
             animationFrameId = requestAnimationFrame(predictWebcam);
@@ -141,12 +174,16 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
 
         return () => {
             if (videoRef.current && videoRef.current.srcObject) {
-                (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+                const stream = videoRef.current.srcObject as MediaStream;
+                stream.getTracks().forEach(track => track.stop());
             }
-            if (handLandmarker) handLandmarker.close();
+            if (handLandmarker) {
+                handLandmarker.close();
+            }
             cancelAnimationFrame(animationFrameId);
         };
-    }, [onCursorMove, onPinch, onGrab]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Solo ejecutar una vez al montar - los callbacks son estables
 
     return (
         <div className="relative w-full h-full overflow-hidden rounded-xl border border-white/10 shadow-2xl bg-black">
