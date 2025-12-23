@@ -4,7 +4,7 @@ import { FilesetResolver, HandLandmarker, DrawingUtils } from '@mediapipe/tasks-
 interface HandTrackerProps {
     onCursorMove: (x: number, y: number) => void;
     onPinch: (isPinching: boolean, x: number, y: number) => void;
-    onGrab: (isGrabbing: boolean) => void;
+    onGrab: (isGrabbing: boolean, wristAngle: number) => void;
 }
 
 export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch, onGrab }) => {
@@ -83,6 +83,21 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
             }
         };
 
+        // Calcular angulo de rotacion de la muneca basado en landmarks
+        const calculateWristAngle = (landmarks: { x: number; y: number; z?: number }[]): number => {
+            // Usar base del indice (5) y base del menique (17) para calcular roll
+            const indexBase = landmarks[5];
+            const pinkyBase = landmarks[17];
+
+            // Calcular vector entre base de indice y menique
+            const dx = pinkyBase.x - indexBase.x;
+            const dy = pinkyBase.y - indexBase.y;
+
+            // Calcular angulo (roll de la mano)
+            const angle = Math.atan2(dy, dx);
+            return angle;
+        };
+
         const predictWebcam = () => {
             if (!handLandmarker || !videoRef.current || !canvasRef.current) return;
 
@@ -121,7 +136,7 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
                         // Dibujar TODAS las manos detectadas
                         for (let i = 0; i < results.landmarks.length; i++) {
                             const landmarks = results.landmarks[i];
-                            const handColor = i === 0 ? "#00FF00" : "#FF00FF"; // Verde para mano 1, Magenta para mano 2
+                            const handColor = i === 0 ? "#00FF00" : "#FF00FF";
 
                             drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, {
                                 color: handColor,
@@ -152,15 +167,35 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
                         const isPinching = distance < 0.05; // Threshold
                         onPinchRef.current(isPinching, cursorX, cursorY);
 
-                        // Logic for Grab (Fist-like)
-                        // Simplified: check if finger tips are close to wrist? or just a generic "pinch + middle finger down"
-                        // For now, let's assume Pinch is the main trigger. Grab can be implemented if needed for 3D rotation.
-                        // Let's use all tips close together for grab.
+                        // Logic for Grab (todos los dedos cerrados)
                         const middleTip = landmarks[12];
+                        const ringTip = landmarks[16];
+                        const pinkyTip = landmarks[20];
+                        const palm = landmarks[0]; // Wrist
 
-                        const grabDistance = Math.hypot(thumbTip.x - middleTip.x, thumbTip.y - middleTip.y);
-                        const isGrabbing = grabDistance < 0.1 && isPinching;
-                        onGrabRef.current(isGrabbing);
+                        // Detectar puno cerrado: todos los dedos cerca de la palma
+                        const fistThreshold = 0.15;
+                        const indexDist = Math.hypot(indexTip.x - palm.x, indexTip.y - palm.y);
+                        const middleDist = Math.hypot(middleTip.x - palm.x, middleTip.y - palm.y);
+                        const ringDist = Math.hypot(ringTip.x - palm.x, ringTip.y - palm.y);
+                        const pinkyDist = Math.hypot(pinkyTip.x - palm.x, pinkyTip.y - palm.y);
+                        const thumbDist = Math.hypot(thumbTip.x - palm.x, thumbTip.y - palm.y);
+
+                        const isGrabbing = (
+                            indexDist < fistThreshold &&
+                            middleDist < fistThreshold &&
+                            ringDist < fistThreshold &&
+                            pinkyDist < fistThreshold &&
+                            thumbDist < fistThreshold
+                        );
+
+                        // Calcular angulo de muneca para rotacion
+                        const wristAngle = calculateWristAngle(landmarks);
+
+                        onGrabRef.current(isGrabbing, wristAngle);
+                    } else {
+                        // Sin manos detectadas
+                        onGrabRef.current(false, 0);
                     }
 
                     ctx.restore();
@@ -183,7 +218,7 @@ export const HandTracker: React.FC<HandTrackerProps> = ({ onCursorMove, onPinch,
             cancelAnimationFrame(animationFrameId);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []); // Solo ejecutar una vez al montar - los callbacks son estables
+    }, []);
 
     return (
         <div className="relative w-full h-full overflow-hidden rounded-xl border border-white/10 shadow-2xl bg-black">
