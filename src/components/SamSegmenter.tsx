@@ -1,9 +1,4 @@
-import { useEffect, useState } from 'react';
-import * as ort from 'onnxruntime-web';
-import { imageToTensor } from '../utils/samHelpers';
-
-// Configure WASM paths - Use local files (now synchronized with npm version)
-ort.env.wasm.wasmPaths = "/";
+import { useEffect, useState, useRef } from 'react';
 
 interface SamSegmenterProps {
     imageSrc: string | null;
@@ -11,83 +6,121 @@ interface SamSegmenterProps {
     onMaskGenerated: (mask: Float32Array, width: number, height: number) => void;
 }
 
-// Global sessions to avoid reloading
-let encoderSession: ort.InferenceSession | null = null;
-let decoderSession: ort.InferenceSession | null = null;
-let imageEmbedding: ort.Tensor | null = null;
-
-export const SamSegmenter = ({ imageSrc, onImageEmbeddingCalculated }: SamSegmenterProps) => {
+export const SamSegmenter = ({ imageSrc, onImageEmbeddingCalculated, onMaskGenerated }: SamSegmenterProps) => {
     const [status, setStatus] = useState<string>('Idle');
+    const [modelsLoaded, setModelsLoaded] = useState(false);
+    const workerRef = useRef<Worker | null>(null);
 
-    // Load Models
+    // Refs para callbacks estables
+    const onEmbeddingRef = useRef(onImageEmbeddingCalculated);
+    const onMaskRef = useRef(onMaskGenerated);
+
     useEffect(() => {
-        const loadModels = async () => {
-            try {
-                // WASM con SIMD - WebGL no soporta int64 usado en SAM
-                const sessionOptions: ort.InferenceSession.SessionOptions = {
-                    executionProviders: ['wasm'],
-                    graphOptimizationLevel: 'all'
-                };
+        onEmbeddingRef.current = onImageEmbeddingCalculated;
+        onMaskRef.current = onMaskGenerated;
+    }, [onImageEmbeddingCalculated, onMaskGenerated]);
 
-                if (!encoderSession) {
-                    setStatus('Loading Encoder...');
-                    encoderSession = await ort.InferenceSession.create(
-                        '/models/sam_vit_b_01ec64.quant.encoder.onnx',
-                        sessionOptions
-                    );
-                }
-                if (!decoderSession) {
-                    setStatus('Loading Decoder...');
-                    decoderSession = await ort.InferenceSession.create(
-                        '/models/sam_vit_b_01ec64.quant.decoder.onnx',
-                        sessionOptions
-                    );
-                }
-                setStatus('Models Loaded');
-            } catch (e) {
-                console.error(e);
-                setStatus('Error loading models');
+    // Inicializar Worker - solo una vez
+    useEffect(() => {
+        workerRef.current = new Worker(
+            new URL('../workers/samWorker.ts', import.meta.url),
+            { type: 'module' }
+        );
+
+        workerRef.current.onmessage = (event: MessageEvent) => {
+            const { type, payload } = event.data;
+
+            switch (type) {
+                case 'STATUS':
+                    setStatus(payload.status);
+                    break;
+                case 'MODELS_LOADED':
+                    setModelsLoaded(true);
+                    break;
+                case 'ENCODER_COMPLETE':
+                    onEmbeddingRef.current();
+                    break;
+                case 'DECODER_COMPLETE':
+                    onMaskRef.current(payload.maskData, payload.dims[2], payload.dims[3]);
+                    break;
+                case 'ERROR':
+                    console.error('Worker error:', payload.message);
+                    setStatus('Error: ' + payload.message);
+                    break;
             }
         };
-        loadModels();
-    }, []);
 
-    // Run Encoder when image changes
+        workerRef.current.onerror = (error) => {
+            console.error('Worker error:', error);
+            setStatus('Worker Error');
+        };
+
+        // Cargar modelos
+        workerRef.current.postMessage({ type: 'LOAD_MODELS' });
+
+        return () => {
+            workerRef.current?.terminate();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Solo inicializar una vez
+
+    // Ejecutar encoder cuando cambia la imagen
     useEffect(() => {
-        if (!imageSrc || !encoderSession) return;
+        if (!imageSrc || !modelsLoaded || !workerRef.current) return;
 
         const runEncoder = async () => {
-            setStatus('Encoding Image...');
+            const img = new Image();
+            img.crossOrigin = 'Anonymous';
+            img.src = imageSrc;
+
             try {
-                const img = new Image();
-                img.crossOrigin = 'Anonymous';
-                img.src = imageSrc;
                 await img.decode();
 
-                const tensor = await imageToTensor(img);
-                const feeds = { input_image: tensor };
+                // Convertir imagen a tensor data
+                const canvas = document.createElement('canvas');
+                const width = 1024;
+                const height = 1024;
+                canvas.width = width;
+                canvas.height = height;
 
-                const results = await encoderSession!.run(feeds);
-                imageEmbedding = results.image_embeddings;
-                // Note: Check model output name. Usually 'image_embeddings'.
+                const ctx = canvas.getContext('2d');
+                if (!ctx) throw new Error('Could not get canvas context');
 
-                setStatus('Embedding Ready');
-                onImageEmbeddingCalculated();
-                tensor.dispose();
+                ctx.drawImage(img, 0, 0, width, height);
+                const imageData = ctx.getImageData(0, 0, width, height);
+                const { data } = imageData;
+
+                // Convertir a Float32 HWC format
+                const tensorData = new Float32Array(width * height * 3);
+                const mean = [123.675, 116.28, 103.53];
+                const std = [58.395, 57.12, 57.375];
+
+                for (let i = 0; i < width * height; i++) {
+                    const r = data[i * 4];
+                    const g = data[i * 4 + 1];
+                    const b = data[i * 4 + 2];
+
+                    tensorData[i * 3] = (r - mean[0]) / std[0];
+                    tensorData[i * 3 + 1] = (g - mean[1]) / std[1];
+                    tensorData[i * 3 + 2] = (b - mean[2]) / std[2];
+                }
+
+                // Enviar al worker
+                workerRef.current?.postMessage({
+                    type: 'RUN_ENCODER',
+                    payload: {
+                        tensorData: tensorData,
+                        shape: [height, width, 3]
+                    }
+                });
             } catch (e) {
-                console.error(e);
-                setStatus('Encoder Error');
+                console.error('Error processing image:', e);
+                setStatus('Image Error');
             }
         };
 
         runEncoder();
-    }, [imageSrc, onImageEmbeddingCalculated]);
-
-    // We expose a function to run the decoder, but since this is a component, 
-    // maybe we should expose via Ref or Context. For now, let's attach to window or just export logic.
-    // Better: This component listens to an event or we move logic to a hook.
-    // For the prototype, let's export a helper logic separate from the UI component?
-    // Or keep internal state.
+    }, [imageSrc, modelsLoaded]);
 
     return (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/80 text-cyan-400 px-4 py-2 rounded-full text-xs font-mono border border-cyan-900 backdrop-blur-sm">
@@ -96,55 +129,14 @@ export const SamSegmenter = ({ imageSrc, onImageEmbeddingCalculated }: SamSegmen
     );
 };
 
-// Export Decoder function for use in App
-export const runSamDecoder = async (x: number, y: number) => {
-    if (!decoderSession || !imageEmbedding) {
-        console.warn("Decoder not ready");
-        return null;
+// Funcion para ejecutar decoder desde fuera del componente
+export const runSamDecoder = (worker: Worker | null, x: number, y: number) => {
+    if (!worker) {
+        console.warn('Worker not ready');
+        return;
     }
-
-    try {
-        // Prepare inputs
-        // Point coords: (1, 2, 2) - Normalized or Pixel? 
-        // SAM decoder expects pixel coordinates in 1024x1024 space usually, or original image space if resized.
-        // Our ImageToTensor resized to 1024x1024. Use that.
-
-        // Inputs:
-        // image_embeddings: from encoder
-        // point_coords: (1, N, 2)
-        // point_labels: (1, N)
-        // mask_input: (1, 1, 256, 256) (optional)
-        // has_mask_input: (1)
-        // orig_im_size: (2)
-
-        const pointCoords = new Float32Array([x * 1024, y * 1024]); // Single point
-        const pointLabels = new Float32Array([1]); // 1 = Foreground point
-
-        const pointCoordsTensor = new ort.Tensor('float32', pointCoords, [1, 1, 2]);
-        const pointLabelsTensor = new ort.Tensor('float32', pointLabels, [1, 1]);
-
-        const maskInput = new ort.Tensor('float32', new Float32Array(256 * 256), [1, 1, 256, 256]);
-        const hasMaskInput = new ort.Tensor('float32', new Float32Array([0]), [1]);
-        const origImSize = new ort.Tensor('float32', new Float32Array([1024, 1024]), [2]);
-
-        const feeds = {
-            image_embeddings: imageEmbedding,
-            point_coords: pointCoordsTensor,
-            point_labels: pointLabelsTensor,
-            mask_input: maskInput,
-            has_mask_input: hasMaskInput,
-            orig_im_size: origImSize
-        };
-
-        const results = await decoderSession.run(feeds);
-        // masks: (1, 4, 1024, 1024) - low res usually, need post process?
-        // Check specific model output. Usually 'masks'.
-        const masks = results.masks;
-
-        // Return the first mask
-        return masks;
-    } catch (e) {
-        console.error("Decoder Error", e);
-        return null;
-    }
+    worker.postMessage({
+        type: 'RUN_DECODER',
+        payload: { x, y }
+    });
 };
