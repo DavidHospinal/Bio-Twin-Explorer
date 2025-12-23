@@ -23,9 +23,9 @@ export const SamSegmenter = ({ imageSrc, onImageEmbeddingCalculated }: SamSegmen
     useEffect(() => {
         const loadModels = async () => {
             try {
-                // Opciones para usar WebGL (GPU) con fallback a WASM (CPU)
+                // WASM con SIMD - WebGL no soporta int64 usado en SAM
                 const sessionOptions: ort.InferenceSession.SessionOptions = {
-                    executionProviders: ['webgl', 'wasm'],
+                    executionProviders: ['wasm'],
                     graphOptimizationLevel: 'all'
                 };
 
