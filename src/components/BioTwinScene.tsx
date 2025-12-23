@@ -2,17 +2,18 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 import { useRef } from 'react';
 import * as THREE from 'three';
+import { ExtrudedTissue } from './ExtrudedTissue';
 
 interface BioTwinSceneProps {
     cursorX: number;
     cursorY: number;
     isPinching: boolean;
     isGrabbing: boolean;
+    tissueShapes?: THREE.Shape[];
 }
 
-// Componente de cursor 3D que sigue la posición de la mano - MUCHO MÁS GRANDE
+// Componente de cursor 3D que sigue la posicion de la mano
 const HandCursor3D = ({ x, y, isPinching }: { x: number; y: number; isPinching: boolean }) => {
-    // Convertir coordenadas normalizadas (0-1) a espacio 3D
     const posX = (x - 0.5) * 12;
     const posY = (0.5 - y) * 8;
 
@@ -30,11 +31,10 @@ const HandCursor3D = ({ x, y, isPinching }: { x: number; y: number; isPinching: 
     );
 };
 
-// Tejido 3D con rotación animada
+// Tejido 3D placeholder con rotacion animada
 const PlaceholderTissue = () => {
     const meshRef = useRef<THREE.Mesh>(null);
 
-    // Animación de rotación
     useFrame((_, delta) => {
         if (meshRef.current) {
             meshRef.current.rotation.y += delta * 0.5;
@@ -56,20 +56,22 @@ const PlaceholderTissue = () => {
     );
 };
 
-export const BioTwinScene = ({ cursorX, cursorY, isPinching }: BioTwinSceneProps) => {
+export const BioTwinScene = ({ cursorX, cursorY, isPinching, tissueShapes }: BioTwinSceneProps) => {
+    const hasShapes = tissueShapes && tissueShapes.length > 0;
+
     return (
         <div className="w-full h-full min-h-[300px]">
             <Canvas
                 camera={{ position: [0, 0, 10], fov: 60 }}
                 style={{ background: 'linear-gradient(to bottom, #0f172a, #1e293b)' }}
             >
-                {/* Iluminación mejorada */}
+                {/* Iluminacion */}
                 <ambientLight intensity={0.5} />
                 <directionalLight position={[10, 10, 5]} intensity={1.5} />
                 <pointLight position={[-10, -10, -5]} color="#06b6d4" intensity={1} />
-                <pointLight position={[10, 10, 10]} color="#8b5cf6" intensity={0.5} />
+                <pointLight position={[10, 10, 10]} color="#ec4899" intensity={0.5} />
 
-                {/* Controles - siempre habilitados para rotar con mouse */}
+                {/* Controles */}
                 <OrbitControls
                     enableZoom={true}
                     enablePan={true}
@@ -94,13 +96,22 @@ export const BioTwinScene = ({ cursorX, cursorY, isPinching }: BioTwinSceneProps
                 {/* Cursor 3D que sigue la mano */}
                 <HandCursor3D x={cursorX} y={cursorY} isPinching={isPinching} />
 
-                {/* Tejido con animación */}
-                <PlaceholderTissue />
+                {/* Tejido segmentado o placeholder */}
+                {hasShapes ? (
+                    <ExtrudedTissue
+                        shapes={tissueShapes}
+                        depth={0.8}
+                        color="#ec4899"
+                        position={[0, 0, 0]}
+                    />
+                ) : (
+                    <PlaceholderTissue />
+                )}
             </Canvas>
 
             {/* Instrucciones */}
             <div className="absolute top-2 left-2 text-xs text-slate-400 bg-black/50 p-2 rounded">
-                🖱️ Arrastra para rotar | Scroll para zoom
+                Arrastra para rotar | Scroll para zoom
             </div>
         </div>
     );

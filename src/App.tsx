@@ -1,7 +1,9 @@
 import { useState, useCallback } from 'react';
+import * as THREE from 'three';
 import { HandTracker } from './components/HandTracker';
 import { BioTwinScene } from './components/BioTwinScene';
 import { SamSegmenter } from './components/SamSegmenter';
+import { maskToShapes } from './utils/maskToShape';
 import { Target, Grab, MousePointerClick, Brain, Upload } from 'lucide-react';
 
 function App() {
@@ -10,6 +12,7 @@ function App() {
   const [isGrabbing, setIsGrabbing] = useState(false);
   const [aiReady, setAiReady] = useState(false);
   const [testImage, setTestImage] = useState<string | null>(null);
+  const [tissueShapes, setTissueShapes] = useState<THREE.Shape[]>([]);
 
   // Handler para cargar imagen
   const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -19,9 +22,18 @@ function App() {
       reader.onload = (event) => {
         setTestImage(event.target?.result as string);
         setAiReady(false);
+        setTissueShapes([]); // Limpiar shapes anteriores
       };
       reader.readAsDataURL(file);
     }
+  }, []);
+
+  // Handler para mascara generada por SAM
+  const handleMaskGenerated = useCallback((maskData: Float32Array, width: number, height: number) => {
+    console.log('Mask generated:', width, 'x', height);
+    const shapes = maskToShapes(maskData, width, height);
+    console.log('Shapes created:', shapes.length);
+    setTissueShapes(shapes);
   }, []);
 
   return (
@@ -33,7 +45,7 @@ function App() {
             Bio-Twin Explorer
           </h1>
           <p className="text-sm text-slate-400 mb-6">
-            Gemelo Digital de Tejido Biológico
+            Gemelo Digital de Tejido Biologico
           </p>
 
           <div className="space-y-4">
@@ -62,6 +74,15 @@ function App() {
                 <p className="font-bold">{isGrabbing ? 'GRABBING' : 'Released'}</p>
               </div>
             </div>
+
+            {tissueShapes.length > 0 && (
+              <div className="flex items-center gap-3 p-3 bg-pink-500/20 rounded-lg border border-pink-500 text-pink-300">
+                <div>
+                  <p className="text-xs">3D Tissue</p>
+                  <p className="font-bold">{tissueShapes.length} shapes</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -72,16 +93,17 @@ function App() {
             cursorY={cursor.y}
             isPinching={isPinching}
             isGrabbing={isGrabbing}
+            tissueShapes={tissueShapes}
           />
 
-          {/* SamSegmenter para segmentación AI */}
+          {/* SamSegmenter para segmentacion AI */}
           <SamSegmenter
             imageSrc={testImage}
             onImageEmbeddingCalculated={() => setAiReady(true)}
-            onMaskGenerated={() => { }}
+            onMaskGenerated={handleMaskGenerated}
           />
 
-          {/* Botón para cargar imagen */}
+          {/* Boton para cargar imagen */}
           <div className="absolute top-4 right-4">
             <label className="cursor-pointer bg-cyan-600 hover:bg-cyan-500 px-3 py-2 rounded-lg text-xs flex items-center gap-2 transition-colors">
               <Upload size={14} />
