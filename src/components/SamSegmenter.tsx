@@ -23,13 +23,25 @@ export const SamSegmenter = ({ imageSrc, onImageEmbeddingCalculated }: SamSegmen
     useEffect(() => {
         const loadModels = async () => {
             try {
+                // Opciones para usar WebGL (GPU) con fallback a WASM (CPU)
+                const sessionOptions: ort.InferenceSession.SessionOptions = {
+                    executionProviders: ['webgl', 'wasm'],
+                    graphOptimizationLevel: 'all'
+                };
+
                 if (!encoderSession) {
                     setStatus('Loading Encoder...');
-                    encoderSession = await ort.InferenceSession.create('/models/sam_vit_b_01ec64.quant.encoder.onnx');
+                    encoderSession = await ort.InferenceSession.create(
+                        '/models/sam_vit_b_01ec64.quant.encoder.onnx',
+                        sessionOptions
+                    );
                 }
                 if (!decoderSession) {
                     setStatus('Loading Decoder...');
-                    decoderSession = await ort.InferenceSession.create('/models/sam_vit_b_01ec64.quant.decoder.onnx');
+                    decoderSession = await ort.InferenceSession.create(
+                        '/models/sam_vit_b_01ec64.quant.decoder.onnx',
+                        sessionOptions
+                    );
                 }
                 setStatus('Models Loaded');
             } catch (e) {
